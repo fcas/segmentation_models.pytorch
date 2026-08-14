@@ -14,10 +14,9 @@
 # import sys
 # sys.path.insert(0, os.path.abspath('.'))
 
-import os
-import re
 import sys
 import datetime
+# import sphinx_rtd_theme
 
 sys.path.append("..")
 
@@ -46,11 +45,20 @@ version = get_version()
 
 extensions = [
     "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
     "sphinx.ext.coverage",
+    "sphinx.ext.intersphinx",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
     "sphinx.ext.mathjax",
-    "autodocsumm",
+]
+
+# Warn about all references where the target cannot be found.
+nitpicky = True
+nitpick_ignore = [
+    # Undocumented classes
+    ("py:class", "torch.FloatTensor"),
+    ("py:class", "torch.LongTensor"),
 ]
 
 # Add any paths that contain templates here, relative to this directory.
@@ -68,16 +76,13 @@ exclude_patterns = []
 # a list of builtin themes.
 #
 
-import sphinx_rtd_theme
-
-html_theme = "sphinx_rtd_theme"
-html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
+# html_theme = "sphinx_rtd_theme"
+# html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
 
 # import karma_sphinx_theme
 # html_theme = "karma_sphinx_theme"
-import faculty_sphinx_theme
 
-html_theme = "faculty_sphinx_theme"
+html_theme = "sphinx_book_theme"
 
 # import catalyst_sphinx_theme
 # html_theme = "catalyst_sphinx_theme"
@@ -88,7 +93,7 @@ html_logo = "logo.png"
 # Add any paths that contain custom static files (such as style sheets) here,
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
-html_static_path = ["_static"]
+# html_static_path = ["_static"]
 
 # -- Extension configuration -------------------------------------------------
 
@@ -97,23 +102,14 @@ napoleon_google_docstring = True
 napoleon_include_init_with_doc = True
 napoleon_numpy_docstring = False
 
-autodoc_mock_imports = [
-    "torch",
-    "tqdm",
-    "numpy",
-    "timm",
-    "cv2",
-    "PIL",
-    "pretrainedmodels",
-    "torchvision",
-    "efficientnet-pytorch",
-    "segmentation_models_pytorch.encoders",
-    "segmentation_models_pytorch.utils",
-    # 'segmentation_models_pytorch.base',
-]
-
 autoclass_content = "both"
 autodoc_typehints = "description"
+
+# sphinx.ext.intersphinx
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "torch": ("https://docs.pytorch.org/docs/stable/", None),
+}
 
 # --- Work around to make autoclass signatures not (*args, **kwargs) ----------
 

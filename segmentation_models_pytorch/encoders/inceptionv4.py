@@ -23,20 +23,34 @@ Methods:
         depth = 3 -> number of feature tensors = 4 (one with same resolution as input and 3 downsampled).
 """
 
+import torch
 import torch.nn as nn
-from pretrainedmodels.models.inceptionv4 import InceptionV4, BasicConv2d
-from pretrainedmodels.models.inceptionv4 import pretrained_settings
+
+from typing import List
 
 from ._base import EncoderMixin
+from ._inceptionv4 import InceptionV4
 
 
 class InceptionV4Encoder(InceptionV4, EncoderMixin):
-    def __init__(self, stage_idxs, out_channels, depth=5, **kwargs):
+    def __init__(
+        self,
+        out_channels: List[int],
+        depth: int = 5,
+        output_stride: int = 32,
+        **kwargs,
+    ):
+        if depth > 5 or depth < 1:
+            raise ValueError(
+                f"{self.__class__.__name__} depth should be in range [1, 5], got {depth}"
+            )
         super().__init__(**kwargs)
-        self._stage_idxs = stage_idxs
-        self._out_channels = out_channels
+
         self._depth = depth
         self._in_channels = 3
+        self._out_channels = out_channels
+        self._output_stride = output_stride
+        self._out_indexes = [2, 4, 8, 14, len(self.features) - 1]
 
         # correct paddings
         for m in self.modules():
@@ -49,30 +63,29 @@ class InceptionV4Encoder(InceptionV4, EncoderMixin):
         # remove linear layers
         del self.last_linear
 
-    def make_dilated(self, stage_list, dilation_list):
+    def make_dilated(self, *args, **kwargs):
         raise ValueError(
-            "InceptionV4 encoder does not support dilated mode " "due to pooling operation for downsampling!"
+            "InceptionV4 encoder does not support dilated mode "
+            "due to pooling operation for downsampling!"
         )
 
-    def get_stages(self):
-        return [
-            nn.Identity(),
-            self.features[: self._stage_idxs[0]],
-            self.features[self._stage_idxs[0] : self._stage_idxs[1]],
-            self.features[self._stage_idxs[1] : self._stage_idxs[2]],
-            self.features[self._stage_idxs[2] : self._stage_idxs[3]],
-            self.features[self._stage_idxs[3] :],
-        ]
+    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
+        depth = 0
+        features = [x]
 
-    def forward(self, x):
+        for i, module in enumerate(self.features):
+            x = module(x)
 
-        stages = self.get_stages()
+            if i in self._out_indexes:
+                features.append(x)
+                depth += 1
 
-        features = []
-        for i in range(self._depth + 1):
-            x = stages[i](x)
-            features.append(x)
+            # torchscript does not support break in cycle, so we just
+            # go over all modules and then slice number of features
+            if not torch.jit.is_scripting() and depth > self._depth:
+                break
 
+        features = features[: self._depth + 1]
         return features
 
     def load_state_dict(self, state_dict, **kwargs):
@@ -84,10 +97,18 @@ class InceptionV4Encoder(InceptionV4, EncoderMixin):
 inceptionv4_encoders = {
     "inceptionv4": {
         "encoder": InceptionV4Encoder,
-        "pretrained_settings": pretrained_settings["inceptionv4"],
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/inceptionv4.imagenet",
+                "revision": "918fb54f07811d82a4ecde3a51156041d0facba9",
+            },
+            "imagenet+background": {
+                "repo_id": "smp-hub/inceptionv4.imagenet-background",
+                "revision": "8c2a48e20d2709ee64f8421c61be309f05bfa536",
+            },
+        },
         "params": {
-            "stage_idxs": (3, 5, 9, 15),
-            "out_channels": (3, 64, 192, 384, 1024, 1536),
+            "out_channels": [3, 64, 192, 384, 1024, 1536],
             "num_classes": 1001,
         },
     }

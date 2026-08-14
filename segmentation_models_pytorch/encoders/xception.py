@@ -1,19 +1,28 @@
-import re
-import torch.nn as nn
-
-from pretrainedmodels.models.xception import pretrained_settings
-from pretrainedmodels.models.xception import Xception
+from typing import List
 
 from ._base import EncoderMixin
+from ._xception import Xception
 
 
 class XceptionEncoder(Xception, EncoderMixin):
-    def __init__(self, out_channels, *args, depth=5, **kwargs):
+    def __init__(
+        self,
+        out_channels: List[int],
+        *args,
+        depth: int = 5,
+        output_stride: int = 32,
+        **kwargs,
+    ):
+        if depth > 5 or depth < 1:
+            raise ValueError(
+                f"{self.__class__.__name__} depth should be in range [1, 5], got {depth}"
+            )
         super().__init__(*args, **kwargs)
 
-        self._out_channels = out_channels
         self._depth = depth
         self._in_channels = 3
+        self._out_channels = out_channels
+        self._output_stride = output_stride
 
         # modify padding to maintain output shape
         self.conv1.padding = (1, 1)
@@ -23,35 +32,49 @@ class XceptionEncoder(Xception, EncoderMixin):
 
     def make_dilated(self, *args, **kwargs):
         raise ValueError(
-            "Xception encoder does not support dilated mode " "due to pooling operation for downsampling!"
+            "Xception encoder does not support dilated mode "
+            "due to pooling operation for downsampling!"
         )
 
-    def get_stages(self):
-        return [
-            nn.Identity(),
-            nn.Sequential(self.conv1, self.bn1, self.relu, self.conv2, self.bn2, self.relu),
-            self.block1,
-            self.block2,
-            nn.Sequential(
-                self.block3,
-                self.block4,
-                self.block5,
-                self.block6,
-                self.block7,
-                self.block8,
-                self.block9,
-                self.block10,
-                self.block11,
-            ),
-            nn.Sequential(self.block12, self.conv3, self.bn3, self.relu, self.conv4, self.bn4),
-        ]
-
     def forward(self, x):
-        stages = self.get_stages()
+        features = [x]
 
-        features = []
-        for i in range(self._depth + 1):
-            x = stages[i](x)
+        if self._depth >= 1:
+            x = self.conv1(x)
+            x = self.bn1(x)
+            x = self.relu1(x)
+            x = self.conv2(x)
+            x = self.bn2(x)
+            x = self.relu2(x)
+            features.append(x)
+
+        if self._depth >= 2:
+            x = self.block1(x)
+            features.append(x)
+
+        if self._depth >= 3:
+            x = self.block2(x)
+            features.append(x)
+
+        if self._depth >= 4:
+            x = self.block3(x)
+            x = self.block4(x)
+            x = self.block5(x)
+            x = self.block6(x)
+            x = self.block7(x)
+            x = self.block8(x)
+            x = self.block9(x)
+            x = self.block10(x)
+            x = self.block11(x)
+            features.append(x)
+
+        if self._depth >= 5:
+            x = self.block12(x)
+            x = self.conv3(x)
+            x = self.bn3(x)
+            x = self.relu3(x)
+            x = self.conv4(x)
+            x = self.bn4(x)
             features.append(x)
 
         return features
@@ -67,9 +90,12 @@ class XceptionEncoder(Xception, EncoderMixin):
 xception_encoders = {
     "xception": {
         "encoder": XceptionEncoder,
-        "pretrained_settings": pretrained_settings["xception"],
-        "params": {
-            "out_channels": (3, 64, 128, 256, 728, 2048),
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/xception.imagenet",
+                "revision": "01cfaf27c11353b1f0c578e7e26d2c000ea91049",
+            },
         },
-    },
+        "params": {"out_channels": [3, 64, 128, 256, 728, 2048]},
+    }
 }

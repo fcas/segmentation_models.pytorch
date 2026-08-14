@@ -24,64 +24,71 @@ Methods:
 """
 
 import re
-import torch.nn as nn
 
-from pretrainedmodels.models.torchvision_models import pretrained_settings
 from torchvision.models.densenet import DenseNet
 
 from ._base import EncoderMixin
 
 
-class TransitionWithSkip(nn.Module):
-    def __init__(self, module):
-        super().__init__()
-        self.module = module
-
-    def forward(self, x):
-        for module in self.module:
-            x = module(x)
-            if isinstance(module, nn.ReLU):
-                skip = x
-        return x, skip
-
-
 class DenseNetEncoder(DenseNet, EncoderMixin):
-    def __init__(self, out_channels, depth=5, **kwargs):
+    def __init__(self, out_channels, depth=5, output_stride=32, **kwargs):
+        if depth > 5 or depth < 1:
+            raise ValueError(
+                f"{self.__class__.__name__} depth should be in range [1, 5], got {depth}"
+            )
+
         super().__init__(**kwargs)
-        self._out_channels = out_channels
+
         self._depth = depth
         self._in_channels = 3
+        self._out_channels = out_channels
+        self._output_stride = output_stride
         del self.classifier
 
     def make_dilated(self, *args, **kwargs):
-        raise ValueError("DenseNet encoders do not support dilated mode " "due to pooling operation for downsampling!")
-
-    def get_stages(self):
-        return [
-            nn.Identity(),
-            nn.Sequential(self.features.conv0, self.features.norm0, self.features.relu0),
-            nn.Sequential(
-                self.features.pool0,
-                self.features.denseblock1,
-                TransitionWithSkip(self.features.transition1),
-            ),
-            nn.Sequential(self.features.denseblock2, TransitionWithSkip(self.features.transition2)),
-            nn.Sequential(self.features.denseblock3, TransitionWithSkip(self.features.transition3)),
-            nn.Sequential(self.features.denseblock4, self.features.norm5),
-        ]
+        raise ValueError(
+            "DenseNet encoders do not support dilated mode "
+            "due to pooling operation for downsampling!"
+        )
 
     def forward(self, x):
+        features = [x]
 
-        stages = self.get_stages()
+        if self._depth >= 1:
+            x = self.features.conv0(x)
+            x = self.features.norm0(x)
+            x = self.features.relu0(x)
+            features.append(x)
 
-        features = []
-        for i in range(self._depth + 1):
-            x = stages[i](x)
-            if isinstance(x, (list, tuple)):
-                x, skip = x
-                features.append(skip)
-            else:
-                features.append(x)
+        if self._depth >= 2:
+            x = self.features.pool0(x)
+            x = self.features.denseblock1(x)
+            x = self.features.transition1.norm(x)
+            x = self.features.transition1.relu(x)
+            features.append(x)
+
+        if self._depth >= 3:
+            x = self.features.transition1.conv(x)
+            x = self.features.transition1.pool(x)
+            x = self.features.denseblock2(x)
+            x = self.features.transition2.norm(x)
+            x = self.features.transition2.relu(x)
+            features.append(x)
+
+        if self._depth >= 4:
+            x = self.features.transition2.conv(x)
+            x = self.features.transition2.pool(x)
+            x = self.features.denseblock3(x)
+            x = self.features.transition3.norm(x)
+            x = self.features.transition3.relu(x)
+            features.append(x)
+
+        if self._depth >= 5:
+            x = self.features.transition3.conv(x)
+            x = self.features.transition3.pool(x)
+            x = self.features.denseblock4(x)
+            x = self.features.norm5(x)
+            features.append(x)
 
         return features
 
@@ -106,42 +113,62 @@ class DenseNetEncoder(DenseNet, EncoderMixin):
 densenet_encoders = {
     "densenet121": {
         "encoder": DenseNetEncoder,
-        "pretrained_settings": pretrained_settings["densenet121"],
         "params": {
-            "out_channels": (3, 64, 256, 512, 1024, 1024),
+            "out_channels": [3, 64, 256, 512, 1024, 1024],
             "num_init_features": 64,
             "growth_rate": 32,
             "block_config": (6, 12, 24, 16),
         },
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/densenet121.imagenet",
+                "revision": "a17c96896a265b61338f66f61d3887b24f61995a",
+            }
+        },
     },
     "densenet169": {
         "encoder": DenseNetEncoder,
-        "pretrained_settings": pretrained_settings["densenet169"],
         "params": {
-            "out_channels": (3, 64, 256, 512, 1280, 1664),
+            "out_channels": [3, 64, 256, 512, 1280, 1664],
             "num_init_features": 64,
             "growth_rate": 32,
             "block_config": (6, 12, 32, 32),
         },
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/densenet169.imagenet",
+                "revision": "8facfba9fc72f7750879dac9ac6ceb3ab990de8d",
+            }
+        },
     },
     "densenet201": {
         "encoder": DenseNetEncoder,
-        "pretrained_settings": pretrained_settings["densenet201"],
         "params": {
-            "out_channels": (3, 64, 256, 512, 1792, 1920),
+            "out_channels": [3, 64, 256, 512, 1792, 1920],
             "num_init_features": 64,
             "growth_rate": 32,
             "block_config": (6, 12, 48, 32),
         },
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/densenet201.imagenet",
+                "revision": "ed5deb355d71659391d46fae5e7587460fbb5f84",
+            }
+        },
     },
     "densenet161": {
         "encoder": DenseNetEncoder,
-        "pretrained_settings": pretrained_settings["densenet161"],
         "params": {
-            "out_channels": (3, 96, 384, 768, 2112, 2208),
+            "out_channels": [3, 96, 384, 768, 2112, 2208],
             "num_init_features": 96,
             "growth_rate": 48,
             "block_config": (6, 12, 36, 24),
+        },
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/densenet161.imagenet",
+                "revision": "9afe0fec51ab2a627141769d97d6f83756d78446",
+            }
         },
     },
 }

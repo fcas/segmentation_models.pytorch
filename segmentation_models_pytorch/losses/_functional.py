@@ -4,6 +4,7 @@ import numpy as np
 from typing import Optional
 
 import torch
+import torch.linalg as LA
 import torch.nn.functional as F
 
 __all__ = [
@@ -65,7 +66,7 @@ def focal_loss_with_logits(
     References:
         https://github.com/open-mmlab/mmdetection/blob/master/mmdet/core/loss/losses.py
     """
-    target = target.type(output.type())
+    target = target.to(dtype=output.dtype, device=output.device)
 
     logpt = F.binary_cross_entropy_with_logits(output, target, reduction="none")
     pt = torch.exp(-logpt)
@@ -157,15 +158,7 @@ def soft_jaccard_score(
     dims=None,
 ) -> torch.Tensor:
     assert output.size() == target.size()
-    if dims is not None:
-        intersection = torch.sum(output * target, dim=dims)
-        cardinality = torch.sum(output + target, dim=dims)
-    else:
-        intersection = torch.sum(output * target)
-        cardinality = torch.sum(output + target)
-
-    union = cardinality - intersection
-    jaccard_score = (intersection + smooth) / (union + smooth).clamp_min(eps)
+    jaccard_score = soft_tversky_score(output, target, 1.0, 1.0, smooth, eps, dims)
     return jaccard_score
 
 
@@ -177,13 +170,7 @@ def soft_dice_score(
     dims=None,
 ) -> torch.Tensor:
     assert output.size() == target.size()
-    if dims is not None:
-        intersection = torch.sum(output * target, dim=dims)
-        cardinality = torch.sum(output + target, dim=dims)
-    else:
-        intersection = torch.sum(output * target)
-        cardinality = torch.sum(output + target)
-    dice_score = (2.0 * intersection + smooth) / (cardinality + smooth).clamp_min(eps)
+    dice_score = soft_tversky_score(output, target, 0.5, 0.5, smooth, eps, dims)
     return dice_score
 
 
@@ -196,21 +183,37 @@ def soft_tversky_score(
     eps: float = 1e-7,
     dims=None,
 ) -> torch.Tensor:
-    assert output.size() == target.size()
-    if dims is not None:
-        intersection = torch.sum(output * target, dim=dims)  # TP
-        fp = torch.sum(output * (1.0 - target), dim=dims)
-        fn = torch.sum((1 - output) * target, dim=dims)
-    else:
-        intersection = torch.sum(output * target)  # TP
-        fp = torch.sum(output * (1.0 - target))
-        fn = torch.sum((1 - output) * target)
+    """Tversky loss
 
-    tversky_score = (intersection + smooth) / (intersection + alpha * fp + beta * fn + smooth).clamp_min(eps)
+    References:
+        https://arxiv.org/pdf/2302.05666
+        https://arxiv.org/pdf/2303.16296
+
+    """
+    assert output.size() == target.size()
+
+    if dims is not None:
+        output_sum = torch.sum(output, dim=dims)
+        target_sum = torch.sum(target, dim=dims)
+        difference = LA.vector_norm(output - target, ord=1, dim=dims)
+    else:
+        output_sum = torch.sum(output)
+        target_sum = torch.sum(target)
+        difference = LA.vector_norm(output - target, ord=1)
+
+    intersection = (output_sum + target_sum - difference) / 2  # TP
+    fp = output_sum - intersection
+    fn = target_sum - intersection
+
+    tversky_score = (intersection + smooth) / (
+        intersection + alpha * fp + beta * fn + smooth
+    ).clamp_min(eps)
     return tversky_score
 
 
-def wing_loss(output: torch.Tensor, target: torch.Tensor, width=5, curvature=0.5, reduction="mean"):
+def wing_loss(
+    output: torch.Tensor, target: torch.Tensor, width=5, curvature=0.5, reduction="mean"
+):
     """Wing loss
 
     References:
@@ -223,7 +226,7 @@ def wing_loss(output: torch.Tensor, target: torch.Tensor, width=5, curvature=0.5
     idx_smaller = diff_abs < width
     idx_bigger = diff_abs >= width
 
-    loss[idx_smaller] = width * torch.log(1 + diff_abs[idx_smaller] / curvature)
+    loss[idx_smaller] = width * torch.log1p(diff_abs[idx_smaller] / curvature)
 
     C = width - width * math.log(1 + width / curvature)
     loss[idx_bigger] = loss[idx_bigger] - C

@@ -43,7 +43,9 @@ def _lovasz_hinge(logits, labels, per_image=True, ignore=None):
     """
     if per_image:
         loss = mean(
-            _lovasz_hinge_flat(*_flatten_binary_scores(log.unsqueeze(0), lab.unsqueeze(0), ignore))
+            _lovasz_hinge_flat(
+                *_flatten_binary_scores(log.unsqueeze(0), lab.unsqueeze(0), ignore)
+            )
             for log, lab in zip(logits, labels)
         )
     else:
@@ -75,8 +77,8 @@ def _flatten_binary_scores(scores, labels, ignore=None):
     """Flattens predictions in the batch (binary case)
     Remove labels equal to 'ignore'
     """
-    scores = scores.view(-1)
-    labels = labels.view(-1)
+    scores = scores.reshape(-1)
+    labels = labels.reshape(-1)
     if ignore is None:
         return scores, labels
     valid = labels != ignore
@@ -100,11 +102,16 @@ def _lovasz_softmax(probas, labels, classes="present", per_image=False, ignore=N
     """
     if per_image:
         loss = mean(
-            _lovasz_softmax_flat(*_flatten_probas(prob.unsqueeze(0), lab.unsqueeze(0), ignore), classes=classes)
+            _lovasz_softmax_flat(
+                *_flatten_probas(prob.unsqueeze(0), lab.unsqueeze(0), ignore),
+                classes=classes,
+            )
             for prob, lab in zip(probas, labels)
         )
     else:
-        loss = _lovasz_softmax_flat(*_flatten_probas(probas, labels, ignore), classes=classes)
+        loss = _lovasz_softmax_flat(
+            *_flatten_probas(probas, labels, ignore), classes=classes
+        )
     return loss
 
 
@@ -144,13 +151,13 @@ def _flatten_probas(probas, labels, ignore=None):
     if probas.dim() == 3:
         # assumes output of a sigmoid layer
         B, H, W = probas.size()
-        probas = probas.view(B, 1, H, W)
+        probas = probas.reshape(B, 1, H, W)
 
     C = probas.size(1)
     probas = torch.movedim(probas, 1, -1)  # [B, C, Di, Dj, ...] -> [B, Di, Dj, ..., C]
-    probas = probas.contiguous().view(-1, C)  # [P, C]
+    probas = probas.reshape(-1, C)  # [P, C]
 
-    labels = labels.view(-1)
+    labels = labels.reshape(-1)
     if ignore is None:
         return probas, labels
     valid = labels != ignore
@@ -214,12 +221,15 @@ class LovaszLoss(_Loss):
         self.per_image = per_image
 
     def forward(self, y_pred, y_true):
-
         if self.mode in {BINARY_MODE, MULTILABEL_MODE}:
-            loss = _lovasz_hinge(y_pred, y_true, per_image=self.per_image, ignore=self.ignore_index)
+            loss = _lovasz_hinge(
+                y_pred, y_true, per_image=self.per_image, ignore=self.ignore_index
+            )
         elif self.mode == MULTICLASS_MODE:
             y_pred = y_pred.softmax(dim=1)
-            loss = _lovasz_softmax(y_pred, y_true, per_image=self.per_image, ignore=self.ignore_index)
+            loss = _lovasz_softmax(
+                y_pred, y_true, per_image=self.per_image, ignore=self.ignore_index
+            )
         else:
             raise ValueError("Wrong mode {}.".format(self.mode))
         return loss

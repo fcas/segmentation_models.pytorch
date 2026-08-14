@@ -1,24 +1,33 @@
+import torch
 import torch.nn as nn
 
+from typing import Any, Dict, List, Optional, Union
 from segmentation_models_pytorch.base import modules
 
 
 class TransposeX2(nn.Sequential):
-    def __init__(self, in_channels, out_channels, use_batchnorm=True):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        use_norm: Union[bool, str, Dict[str, Any]] = "batchnorm",
+    ):
         super().__init__()
-        layers = [
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(inplace=True),
-        ]
-
-        if use_batchnorm:
-            layers.insert(1, nn.BatchNorm2d(out_channels))
-
-        super().__init__(*layers)
+        conv = nn.ConvTranspose2d(
+            in_channels, out_channels, kernel_size=4, stride=2, padding=1
+        )
+        norm = modules.get_norm_layer(use_norm, out_channels)
+        activation = nn.ReLU(inplace=True)
+        super().__init__(conv, norm, activation)
 
 
 class DecoderBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, use_batchnorm=True):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        use_norm: Union[bool, str, Dict[str, Any]] = "batchnorm",
+    ):
         super().__init__()
 
         self.block = nn.Sequential(
@@ -26,20 +35,22 @@ class DecoderBlock(nn.Module):
                 in_channels,
                 in_channels // 4,
                 kernel_size=1,
-                use_batchnorm=use_batchnorm,
+                use_norm=use_norm,
             ),
-            TransposeX2(in_channels // 4, in_channels // 4, use_batchnorm=use_batchnorm),
+            TransposeX2(in_channels // 4, in_channels // 4, use_norm=use_norm),
             modules.Conv2dReLU(
                 in_channels // 4,
                 out_channels,
                 kernel_size=1,
-                use_batchnorm=use_batchnorm,
+                use_norm=use_norm,
             ),
         )
 
-    def forward(self, x, skip=None):
+    def forward(
+        self, x: torch.Tensor, skip: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         x = self.block(x)
-        if skip is not None:
+        if skip is not None and skip.shape[1] != 0:
             x = x + skip
         return x
 
@@ -47,10 +58,10 @@ class DecoderBlock(nn.Module):
 class LinknetDecoder(nn.Module):
     def __init__(
         self,
-        encoder_channels,
-        prefinal_channels=32,
-        n_blocks=5,
-        use_batchnorm=True,
+        encoder_channels: List[int],
+        prefinal_channels: int = 32,
+        n_blocks: int = 5,
+        use_norm: Union[bool, str, Dict[str, Any]] = "batchnorm",
     ):
         super().__init__()
 
@@ -60,12 +71,25 @@ class LinknetDecoder(nn.Module):
         encoder_channels = encoder_channels[::-1]
 
         channels = list(encoder_channels) + [prefinal_channels]
+        for i in range(1, len(channels) - 1):
+            # Transformer-style encoders may expose a 0-channel placeholder for the
+            # missing 1/2-scale skip. Keep the decoder stream non-empty and just
+            # skip feature fusion at that stage.
+            if channels[i] == 0:
+                channels[i] = channels[i - 1]
 
         self.blocks = nn.ModuleList(
-            [DecoderBlock(channels[i], channels[i + 1], use_batchnorm=use_batchnorm) for i in range(n_blocks)]
+            [
+                DecoderBlock(
+                    channels[i],
+                    channels[i + 1],
+                    use_norm=use_norm,
+                )
+                for i in range(n_blocks)
+            ]
         )
 
-    def forward(self, *features):
+    def forward(self, features: List[torch.Tensor]) -> torch.Tensor:
         features = features[1:]  # remove first skip
         features = features[::-1]  # reverse channels to start from head of encoder
 

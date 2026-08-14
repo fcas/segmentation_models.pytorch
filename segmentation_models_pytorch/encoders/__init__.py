@@ -1,6 +1,12 @@
+import json
 import timm
+import copy
+import warnings
 import functools
-import torch.utils.model_zoo as model_zoo
+
+from huggingface_hub import hf_hub_download
+from safetensors.torch import load_file
+
 
 from .resnet import resnet_encoders
 from .dpn import dpn_encoders
@@ -13,18 +19,22 @@ from .efficientnet import efficient_net_encoders
 from .mobilenet import mobilenet_encoders
 from .xception import xception_encoders
 from .timm_efficientnet import timm_efficientnet_encoders
-from .timm_resnest import timm_resnest_encoders
-from .timm_res2net import timm_res2net_encoders
-from .timm_regnet import timm_regnet_encoders
 from .timm_sknet import timm_sknet_encoders
-from .timm_mobilenetv3 import timm_mobilenetv3_encoders
-from .timm_gernet import timm_gernet_encoders
 from .mix_transformer import mix_transformer_encoders
 from .mobileone import mobileone_encoders
 
 from .timm_universal import TimmUniversalEncoder
+from .timm_vit import TimmViTEncoder  # noqa F401
 
 from ._preprocessing import preprocess_input
+
+__all__ = [
+    "encoders",
+    "get_encoder",
+    "get_encoder_names",
+    "get_preprocessing_params",
+    "get_preprocessing_fn",
+]
 
 encoders = {}
 encoders.update(resnet_encoders)
@@ -38,19 +48,48 @@ encoders.update(efficient_net_encoders)
 encoders.update(mobilenet_encoders)
 encoders.update(xception_encoders)
 encoders.update(timm_efficientnet_encoders)
-encoders.update(timm_resnest_encoders)
-encoders.update(timm_res2net_encoders)
-encoders.update(timm_regnet_encoders)
 encoders.update(timm_sknet_encoders)
-encoders.update(timm_mobilenetv3_encoders)
-encoders.update(timm_gernet_encoders)
 encoders.update(mix_transformer_encoders)
 encoders.update(mobileone_encoders)
 
 
+def is_equivalent_to_timm_universal(name):
+    patterns = [
+        "timm-regnet",
+        "timm-res2",
+        "timm-resnest",
+        "timm-mobilenetv3",
+        "timm-gernet",
+    ]
+    for pattern in patterns:
+        if name.startswith(pattern):
+            return True
+    return False
+
+
 def get_encoder(name, in_channels=3, depth=5, weights=None, output_stride=32, **kwargs):
+    if name.startswith("timm-"):
+        warnings.warn(
+            "`timm-` encoders are deprecated and will be removed in the future. "
+            "Please use `tu-` equivalent encoders instead (see 'Timm encoders' section in the documentation).",
+            DeprecationWarning,
+        )
+
+    # convert timm- models to tu- models
+    if is_equivalent_to_timm_universal(name):
+        name = name.replace("timm-", "tu-")
+        if "mobilenetv3" in name:
+            name = name.replace("tu-", "tu-tf_")
 
     if name.startswith("tu-"):
+        if not isinstance(weights, (type(None), bool)):
+            warnings.warn(
+                f"For 'tu-' (timm universal) encoders, `encoder_weights` should be set to True "
+                f"to download pretrained weights or None for random initialization. "
+                f"The pretrained variant is defined in the encoder name i.e 'tu-<model_name>.<pretrained_tag>'. "
+                f"Got encoder_weights='{weights}'.",
+                UserWarning,
+            )
         name = name[3:]
         encoder = TimmUniversalEncoder(
             name=name,
@@ -62,27 +101,38 @@ def get_encoder(name, in_channels=3, depth=5, weights=None, output_stride=32, **
         )
         return encoder
 
-    try:
-        Encoder = encoders[name]["encoder"]
-    except KeyError:
-        raise KeyError("Wrong encoder name `{}`, supported encoders: {}".format(name, list(encoders.keys())))
+    if name not in encoders:
+        raise KeyError(
+            f"Wrong encoder name `{name}`, supported encoders: {list(encoders.keys())}"
+        )
 
-    params = encoders[name]["params"]
-    params.update(depth=depth)
-    encoder = Encoder(**params)
+    params = copy.deepcopy(encoders[name]["params"])
+    params["depth"] = depth
+    params["output_stride"] = output_stride
+
+    EncoderClass = encoders[name]["encoder"]
+    encoder = EncoderClass(**params)
 
     if weights is not None:
-        try:
-            settings = encoders[name]["pretrained_settings"][weights]
-        except KeyError:
+        if weights not in encoders[name]["pretrained_settings"]:
+            available_weights = list(encoders[name]["pretrained_settings"].keys())
             raise KeyError(
-                "Wrong pretrained weights `{}` for encoder `{}`. Available options are: {}".format(
-                    weights,
-                    name,
-                    list(encoders[name]["pretrained_settings"].keys()),
-                )
+                f"Wrong pretrained weights `{weights}` for encoder `{name}`. "
+                f"Available options are: {available_weights}"
             )
-        encoder.load_state_dict(model_zoo.load_url(settings["url"]))
+
+        settings = encoders[name]["pretrained_settings"][weights]
+        repo_id = settings["repo_id"]
+        revision = settings["revision"]
+
+        hf_hub_download(repo_id, filename="config.json", revision=revision)
+        weights_path = hf_hub_download(
+            repo_id, filename="model.safetensors", revision=revision
+        )
+        state_dict = load_file(weights_path, device="cpu")
+
+        # Load model weights
+        encoder.load_state_dict(state_dict)
 
     encoder.set_in_channels(in_channels, pretrained=weights is not None)
     if output_stride != 32:
@@ -96,17 +146,29 @@ def get_encoder_names():
 
 
 def get_preprocessing_params(encoder_name, pretrained="imagenet"):
-
     if encoder_name.startswith("tu-"):
         encoder_name = encoder_name[3:]
         if not timm.models.is_model_pretrained(encoder_name):
-            raise ValueError(f"{encoder_name} does not have pretrained weights and preprocessing parameters")
+            raise ValueError(
+                f"{encoder_name} does not have pretrained weights and preprocessing parameters"
+            )
         settings = timm.models.get_pretrained_cfg(encoder_name).__dict__
     else:
         all_settings = encoders[encoder_name]["pretrained_settings"]
         if pretrained not in all_settings.keys():
-            raise ValueError("Available pretrained options {}".format(all_settings.keys()))
-        settings = all_settings[pretrained]
+            raise ValueError(
+                "Available pretrained options {}".format(all_settings.keys())
+            )
+
+        repo_id = all_settings[pretrained]["repo_id"]
+        revision = all_settings[pretrained]["revision"]
+
+        # Load config and model
+        config_path = hf_hub_download(
+            repo_id, filename="config.json", revision=revision
+        )
+        with open(config_path, "r") as f:
+            settings = json.load(f)
 
     formatted_settings = {}
     formatted_settings["input_space"] = settings.get("input_space", "RGB")

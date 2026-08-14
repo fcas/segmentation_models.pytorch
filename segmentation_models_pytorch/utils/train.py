@@ -33,12 +33,13 @@ class Epoch:
         pass
 
     def run(self, dataloader):
-
         self.on_epoch_start()
 
         logs = {}
         loss_meter = AverageValueMeter()
-        metrics_meters = {metric.__name__: AverageValueMeter() for metric in self.metrics}
+        metrics_meters = {
+            metric.__name__: AverageValueMeter() for metric in self.metrics
+        }
 
         with tqdm(
             dataloader,
@@ -109,7 +110,7 @@ class ValidEpoch(Epoch):
         self.model.eval()
 
     def batch_update(self, x, y):
-        with torch.no_grad():
+        with torch.inference_mode():
             prediction = self.model.forward(x)
             loss = self.loss(prediction, y)
         return loss, prediction

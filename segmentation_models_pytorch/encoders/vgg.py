@@ -23,52 +23,78 @@ Methods:
         depth = 3 -> number of feature tensors = 4 (one with same resolution as input and 3 downsampled).
 """
 
+import torch
 import torch.nn as nn
+
 from torchvision.models.vgg import VGG
 from torchvision.models.vgg import make_layers
-from pretrainedmodels.models.torchvision_models import pretrained_settings
+
+from typing import List, Union
 
 from ._base import EncoderMixin
 
 # fmt: off
 cfg = {
-    'A': [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
-    'B': [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512, 'M'],
-    'D': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M'],
-    'E': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512, 512, 'M'],
+    "A": [64, "M", 128, "M", 256, 256, "M", 512, 512, "M", 512, 512, "M"],
+    "B": [64, 64, "M", 128, 128, "M", 256, 256, "M", 512, 512, "M", 512, 512, "M"],
+    "D": [64, 64, "M", 128, 128, "M", 256, 256, 256, "M", 512, 512, 512, "M", 512, 512, 512, "M"],
+    "E": [64, 64, "M", 128, 128, "M", 256, 256, 256, 256, "M", 512, 512, 512, 512, "M", 512, 512, 512, 512, "M"],
 }
 # fmt: on
 
 
 class VGGEncoder(VGG, EncoderMixin):
-    def __init__(self, out_channels, config, batch_norm=False, depth=5, **kwargs):
+    def __init__(
+        self,
+        out_channels: List[int],
+        config: List[Union[int, str]],
+        batch_norm: bool = False,
+        depth: int = 5,
+        output_stride: int = 32,
+        **kwargs,
+    ):
+        if depth > 5 or depth < 1:
+            raise ValueError(
+                f"{self.__class__.__name__} depth should be in range [1, 5], got {depth}"
+            )
         super().__init__(make_layers(config, batch_norm=batch_norm), **kwargs)
-        self._out_channels = out_channels
+
         self._depth = depth
         self._in_channels = 3
+        self._out_channels = out_channels
+        self._output_stride = output_stride
+        self._out_indexes = [
+            i - 1
+            for i, module in enumerate(self.features)
+            if isinstance(module, nn.MaxPool2d)
+        ]
+        self._out_indexes.append(len(self.features) - 1)
+
         del self.classifier
 
     def make_dilated(self, *args, **kwargs):
-        raise ValueError("'VGG' models do not support dilated mode due to Max Pooling" " operations for downsampling!")
+        raise ValueError(
+            "'VGG' models do not support dilated mode due to Max Pooling"
+            " operations for downsampling!"
+        )
 
-    def get_stages(self):
-        stages = []
-        stage_modules = []
-        for module in self.features:
-            if isinstance(module, nn.MaxPool2d):
-                stages.append(nn.Sequential(*stage_modules))
-                stage_modules = []
-            stage_modules.append(module)
-        stages.append(nn.Sequential(*stage_modules))
-        return stages
-
-    def forward(self, x):
-        stages = self.get_stages()
-
+    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         features = []
-        for i in range(self._depth + 1):
-            x = stages[i](x)
-            features.append(x)
+        depth = 0
+
+        for i, module in enumerate(self.features):
+            x = module(x)
+
+            if i in self._out_indexes:
+                features.append(x)
+                depth += 1
+
+            # torchscript does not support break in cycle, so we just
+            # go over all modules and then slice number of features
+            if not torch.jit.is_scripting() and depth > self._depth:
+                break
+
+        features = features[: self._depth + 1]
 
         return features
 
@@ -80,75 +106,206 @@ class VGGEncoder(VGG, EncoderMixin):
         super().load_state_dict(state_dict, **kwargs)
 
 
+pretrained_settings = {
+    "vgg11": {
+        "imagenet": {
+            "url": "https://download.pytorch.org/models/vgg11-bbd30ac9.pth",
+            "input_space": "RGB",
+            "input_size": [3, 224, 224],
+            "input_range": [0, 1],
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+            "num_classes": 1000,
+        }
+    },
+    "vgg11_bn": {
+        "imagenet": {
+            "url": "https://download.pytorch.org/models/vgg11_bn-6002323d.pth",
+            "input_space": "RGB",
+            "input_size": [3, 224, 224],
+            "input_range": [0, 1],
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+            "num_classes": 1000,
+        }
+    },
+    "vgg13": {
+        "imagenet": {
+            "url": "https://download.pytorch.org/models/vgg13-c768596a.pth",
+            "input_space": "RGB",
+            "input_size": [3, 224, 224],
+            "input_range": [0, 1],
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+            "num_classes": 1000,
+        }
+    },
+    "vgg13_bn": {
+        "imagenet": {
+            "url": "https://download.pytorch.org/models/vgg13_bn-abd245e5.pth",
+            "input_space": "RGB",
+            "input_size": [3, 224, 224],
+            "input_range": [0, 1],
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+            "num_classes": 1000,
+        }
+    },
+    "vgg16": {
+        "imagenet": {
+            "url": "https://download.pytorch.org/models/vgg16-397923af.pth",
+            "input_space": "RGB",
+            "input_size": [3, 224, 224],
+            "input_range": [0, 1],
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+            "num_classes": 1000,
+        }
+    },
+    "vgg16_bn": {
+        "imagenet": {
+            "url": "https://download.pytorch.org/models/vgg16_bn-6c64b313.pth",
+            "input_space": "RGB",
+            "input_size": [3, 224, 224],
+            "input_range": [0, 1],
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+            "num_classes": 1000,
+        }
+    },
+    "vgg19": {
+        "imagenet": {
+            "url": "https://download.pytorch.org/models/vgg19-dcbb9e9d.pth",
+            "input_space": "RGB",
+            "input_size": [3, 224, 224],
+            "input_range": [0, 1],
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+            "num_classes": 1000,
+        }
+    },
+    "vgg19_bn": {
+        "imagenet": {
+            "url": "https://download.pytorch.org/models/vgg19_bn-c79401a0.pth",
+            "input_space": "RGB",
+            "input_size": [3, 224, 224],
+            "input_range": [0, 1],
+            "mean": [0.485, 0.456, 0.406],
+            "std": [0.229, 0.224, 0.225],
+            "num_classes": 1000,
+        }
+    },
+}
+
 vgg_encoders = {
     "vgg11": {
         "encoder": VGGEncoder,
-        "pretrained_settings": pretrained_settings["vgg11"],
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/vgg11.imagenet",
+                "revision": "ad8b90e1051c38fdbf399cf5016886a1be357390",
+            },
+        },
         "params": {
-            "out_channels": (64, 128, 256, 512, 512, 512),
+            "out_channels": [64, 128, 256, 512, 512, 512],
             "config": cfg["A"],
             "batch_norm": False,
         },
     },
     "vgg11_bn": {
         "encoder": VGGEncoder,
-        "pretrained_settings": pretrained_settings["vgg11_bn"],
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/vgg11_bn.imagenet",
+                "revision": "59757f9215032c9f092977092d57d26a9df7fd9c",
+            },
+        },
         "params": {
-            "out_channels": (64, 128, 256, 512, 512, 512),
+            "out_channels": [64, 128, 256, 512, 512, 512],
             "config": cfg["A"],
             "batch_norm": True,
         },
     },
     "vgg13": {
         "encoder": VGGEncoder,
-        "pretrained_settings": pretrained_settings["vgg13"],
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/vgg13.imagenet",
+                "revision": "1b70ff2580f101a8007a48b51e2b5d1e5925dc42",
+            },
+        },
         "params": {
-            "out_channels": (64, 128, 256, 512, 512, 512),
+            "out_channels": [64, 128, 256, 512, 512, 512],
             "config": cfg["B"],
             "batch_norm": False,
         },
     },
     "vgg13_bn": {
         "encoder": VGGEncoder,
-        "pretrained_settings": pretrained_settings["vgg13_bn"],
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/vgg13_bn.imagenet",
+                "revision": "9be454515193af6612261b7614fe90607e27b143",
+            },
+        },
         "params": {
-            "out_channels": (64, 128, 256, 512, 512, 512),
+            "out_channels": [64, 128, 256, 512, 512, 512],
             "config": cfg["B"],
             "batch_norm": True,
         },
     },
     "vgg16": {
         "encoder": VGGEncoder,
-        "pretrained_settings": pretrained_settings["vgg16"],
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/vgg16.imagenet",
+                "revision": "49d74b799006ee252b86e25acd6f1fd8ac9a99c1",
+            },
+        },
         "params": {
-            "out_channels": (64, 128, 256, 512, 512, 512),
+            "out_channels": [64, 128, 256, 512, 512, 512],
             "config": cfg["D"],
             "batch_norm": False,
         },
     },
     "vgg16_bn": {
         "encoder": VGGEncoder,
-        "pretrained_settings": pretrained_settings["vgg16_bn"],
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/vgg16_bn.imagenet",
+                "revision": "2c186d02fb519e93219a99a1c2af6295aef0bf0d",
+            },
+        },
         "params": {
-            "out_channels": (64, 128, 256, 512, 512, 512),
+            "out_channels": [64, 128, 256, 512, 512, 512],
             "config": cfg["D"],
             "batch_norm": True,
         },
     },
     "vgg19": {
         "encoder": VGGEncoder,
-        "pretrained_settings": pretrained_settings["vgg19"],
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/vgg19.imagenet",
+                "revision": "2853d00d7bca364dbb98be4d6afa347e5aeec1f6",
+            },
+        },
         "params": {
-            "out_channels": (64, 128, 256, 512, 512, 512),
+            "out_channels": [64, 128, 256, 512, 512, 512],
             "config": cfg["E"],
             "batch_norm": False,
         },
     },
     "vgg19_bn": {
         "encoder": VGGEncoder,
-        "pretrained_settings": pretrained_settings["vgg19_bn"],
+        "pretrained_settings": {
+            "imagenet": {
+                "repo_id": "smp-hub/vgg19_bn.imagenet",
+                "revision": "f09a924cb0d201ea6f61601df9559141382271d7",
+            },
+        },
         "params": {
-            "out_channels": (64, 128, 256, 512, 512, 512),
+            "out_channels": [64, 128, 256, 512, 512, 512],
             "config": cfg["E"],
             "batch_norm": True,
         },
